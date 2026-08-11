@@ -19,7 +19,7 @@ import { enforceOutputTokenBudget } from "./chatCore/outputTokenBudget.ts";
 import { maybeConvertJsonBodyToSse } from "./chatCore/jsonBodyToSse.ts";
 import { assembleStreamingResponseHeaders } from "./chatCore/streamingResponseHeaders.ts";
 import { storeStreamingSemanticCacheResponse } from "./chatCore/streamingSemanticCacheStore.ts";
-import { assembleStreamingPipeline } from "./chatCore/streamingPipeline.ts";
+import { assembleStreamingPipeline, resolveClientModelEcho } from "./chatCore/streamingPipeline.ts";
 import { sanitizeChatRequestBody } from "./chatCore/sanitization.ts";
 import { applyResponsesInputPolicy } from "../services/responsesInputPolicy.ts";
 import {
@@ -833,12 +833,13 @@ export async function handleChatCore({
   const isCodexResponsesEcho =
     (isResponsesEndpoint || sourceFormat === FORMATS.OPENAI_RESPONSES) &&
     isCodexOriginatedHeaders(clientRawRequest?.headers);
-  const echoModel =
+  const configuredEchoModel =
     (settings.echoRequestedModelName === true || isCodexResponsesEcho) &&
     typeof requestedModel === "string" &&
     requestedModel
       ? requestedModel
       : null;
+  const echoModel = resolveClientModelEcho(requestedModel, configuredEchoModel);
   const detailedLoggingEnabled =
     !noLogEnabled &&
     (settings.call_log_pipeline_enabled === true ||
@@ -4626,7 +4627,6 @@ export async function handleChatCore({
     // /v1/completions text-completion path) return a body `model` field that
     // differs from the resolved backend id we advertised in the header, leaving
     // strict clients unable to reconcile the two. Rewrite body.model to `model`
-    // FIRST, then let #1311 echo override it when the opt-in setting is on.
     if (typeof model === "string" && model) echoModelInObject(translatedResponse, model);
     // #1311: echo the requested alias/combo name in the non-streaming response model.
     if (echoModel) echoModelInObject(translatedResponse, echoModel);

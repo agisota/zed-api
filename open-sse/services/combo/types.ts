@@ -56,6 +56,8 @@ export type SingleModelTarget =
       allowRateLimitedConnection?: boolean;
       effectiveComboStrategy?: string | null;
       modelAbortSignal?: AbortSignal | null;
+      /** Preserve a non-retryable upstream response for the priority-combo caller. */
+      preserveTerminalFailure?: boolean;
       /** True when this target was selected via context-cache session pinning. */
       modelPinned?: boolean;
     })

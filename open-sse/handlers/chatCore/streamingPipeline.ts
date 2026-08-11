@@ -23,6 +23,7 @@ import { createPiiSseTransform as defaultPiiSse } from "@/lib/streamingPiiTransf
 import { isFeatureFlagEnabled as defaultFeatureFlag } from "@/shared/utils/featureFlags";
 import { OMNIROUTE_RESPONSE_HEADERS } from "@/shared/constants/headers";
 import { SSE_HEARTBEAT_INTERVAL_MS } from "../../config/constants.ts";
+import { isRoxPublicModelId } from "@/lib/roxPublicModelPolicy";
 /**
  * Pipeline assembly instrumentation — performance.mark() along the SSE hot path.
  * Marks are visible to Node.js perf_hooks consumers and DevTools' Performance
@@ -34,6 +35,14 @@ import { SSE_HEARTBEAT_INTERVAL_MS } from "../../config/constants.ts";
 const PIPELINE_START = "omni-pipeline-start";
 const PIPELINE_END = "omni-pipeline-end";
 const PIPELINE_MEASURE = "omni-pipeline";
+
+
+export function resolveClientModelEcho(
+  requestedModel: unknown,
+  configuredEchoModel: string | null
+): string | null {
+  return isRoxPublicModelId(requestedModel) ? requestedModel : configuredEchoModel;
+}
 
 type HeadersLike = Headers | Record<string, unknown> | null | undefined;
 

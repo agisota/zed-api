@@ -73,6 +73,9 @@ import {
   safeResolveProxy,
   safeLogEvents,
   applyExecutorProxyToInfo,
+  markLocalResourcePressureResponse,
+  restoreStagedLocalResourcePressureResponse,
+  stageLocalResourcePressureResponseForRoxCombo,
   shouldRetryStreamEarlyEof,
   withSessionHeader,
   withSelectedConnectionHeader,
@@ -99,6 +102,7 @@ import {
 } from "./reasoningRouting";
 import { createVirtualAutoCombo, resolveAutoRoutingState } from "./autoRouting";
 import { getComboFailureLogError } from "./comboFailureLogging";
+import { getRoxPublicModelFallbackChain, isRoxPublicModelId } from "@/lib/roxPublicModelPolicy";
 
 // Pipeline integration — wired modules
 import { classify429FromError, type FailureKind } from "@/shared/utils/classify429";
@@ -603,11 +607,14 @@ async function handleChatImplementation(
     return errorResponse(hookResponse.status, hookResponse.body as any);
   }
 
+  const roxRequestedModel = isRoxPublicModelId(modelStr) ? modelStr : null;
+  const roxFallbackChain = getRoxPublicModelFallbackChain(roxRequestedModel);
+
   // T05 — Task-Aware Smart Routing
   // Detect the semantic task type and optionally route to the optimal model
   let resolvedModelStr = modelStr;
   let taskRouteInfo: { taskType: string; wasRouted: boolean } | null = null;
-  if (getTaskRoutingConfig().enabled) {
+  if (!roxFallbackChain && getTaskRoutingConfig().enabled) {
     telemetry.startPhase("task-route");
     const tr = applyTaskAwareRouting(modelStr, body);
     if (tr.wasRouted) {
@@ -629,7 +636,7 @@ async function handleChatImplementation(
   // model (some providers don't implement Anthropic's web_search_20250305 server tool).
   // Settings are read only when a web-search tool is present; the override lands before
   // auto/combo resolution and the layer-1 fallback so the target's own handling applies.
-  if (hasNativeWebSearchTool(body)) {
+  if (!roxFallbackChain && hasNativeWebSearchTool(body)) {
     const wsSettings = await getCachedSettings().catch(() => ({}) as Record<string, unknown>);
     const wsRoute = resolveWebSearchRouteOverride(resolvedModelStr, body, wsSettings);
     if (wsRoute.wasRouted) {
@@ -646,26 +653,35 @@ async function handleChatImplementation(
   // combo/provider resolution. Existing behavior is untouched when no rule matches.
   let reasoningDecision: ReasoningRuleDecision | null = null;
   let requestRoutingTags: { tags: string[] } = { tags: [] };
-  const reasoningRouting = await applyReasoningRouting({
-    request,
-    body,
-    modelStr: resolvedModelStr,
-    policy,
-    apiKeyInfo,
-    reasoningIntent,
-  });
-  if (reasoningRouting.response) return reasoningRouting.response;
-  body = reasoningRouting.body;
-  resolvedModelStr = reasoningRouting.modelStr;
-  reasoningDecision = reasoningRouting.reasoningDecision;
-  requestRoutingTags = reasoningRouting.requestRoutingTags;
+  if (!roxFallbackChain) {
+    const reasoningRouting = await applyReasoningRouting({
+      request,
+      body,
+      modelStr: resolvedModelStr,
+      policy,
+      apiKeyInfo,
+      reasoningIntent,
+    });
+    if (reasoningRouting.response) return reasoningRouting.response;
+    body = reasoningRouting.body;
+    resolvedModelStr = reasoningRouting.modelStr;
+    reasoningDecision = reasoningRouting.reasoningDecision;
+    requestRoutingTags = reasoningRouting.requestRoutingTags;
+  }
 
-  const autoRouting = await resolveAutoRoutingState(resolvedModelStr);
-  if (autoRouting.response) return autoRouting.response;
+  const autoRouting = roxFallbackChain ? null : await resolveAutoRoutingState(resolvedModelStr);
+  if (autoRouting?.response) return autoRouting.response;
 
   // Check if model is a combo (has multiple models with fallback)
   telemetry.startPhase("resolve");
-  let combo: any = await getComboForModel(resolvedModelStr);
+  let combo: any = roxFallbackChain
+    ? {
+        name: `rox-public:${roxRequestedModel}`,
+        strategy: "priority",
+        models: [...roxFallbackChain],
+        config: { maxRetries: 0, roxPriorityRetryableOnly: true },
+      }
+    : await getComboForModel(resolvedModelStr);
   if (reasoningDecision?.targetCombo) combo = reasoningDecision.targetCombo;
 
   // "auto" prefix fuzzy matching: "auto/fast" → "auto/best-fast", etc.
@@ -681,9 +697,11 @@ async function handleChatImplementation(
     }
   }
 
-  const virtualCombo = await createVirtualAutoCombo(autoRouting, combo, apiKeyInfo?.id);
-  if (virtualCombo instanceof Response) return virtualCombo;
-  combo = virtualCombo;
+  if (autoRouting) {
+    const virtualCombo = await createVirtualAutoCombo(autoRouting, combo, apiKeyInfo?.id);
+    if (virtualCombo instanceof Response) return virtualCombo;
+    combo = virtualCombo;
+  }
   if (combo) {
     if (reasoningDecision) {
       const filtered = filterReasoningCombo(combo, reasoningDecision);
@@ -813,7 +831,7 @@ async function handleChatImplementation(
 
     // Context-relay keeps generation in combo.ts, but handoff injection lives here
     // because only this layer knows which connectionId was actually selected.
-    const response = await (handleComboChat as any)({
+    const comboResponse = await (handleComboChat as any)({
       body,
       combo,
       handleSingleModel: (
@@ -829,6 +847,7 @@ async function handleChatImplementation(
           providerId?: string | null;
           effectiveComboStrategy?: string | null;
           modelAbortSignal?: AbortSignal | null;
+          preserveTerminalFailure?: boolean;
         }
       ) =>
         handleSingleModelChat(
@@ -848,6 +867,7 @@ async function handleChatImplementation(
             comboStepId: target?.stepId || null,
             comboExecutionKey: target?.executionKey || target?.stepId || null,
             skipUpstreamRetry: target?.failoverBeforeRetry ?? false,
+            preserveTerminalFailure: target?.preserveTerminalFailure === true,
             allowRateLimitedConnection: target?.allowRateLimitedConnection === true,
             preselectedCredentials: comboPreselectedCredentials.get(
               getComboCredentialCacheKey(m, target)
@@ -856,6 +876,7 @@ async function handleChatImplementation(
             providerId: target?.providerId ?? null,
             correlationId: reqId,
             modelPinned: (target as any)?.modelPinned ?? false,
+            requestedModel: roxRequestedModel,
             reasoningDecision,
             reasoningIntent,
             reasoningRequestTags: requestRoutingTags.tags,
@@ -873,15 +894,18 @@ async function handleChatImplementation(
           target?.effectiveComboStrategy ?? combo.strategy,
           true
         ).then(async (res: Response) => {
+          const comboResult = roxFallbackChain
+            ? stageLocalResourcePressureResponseForRoxCombo(res)
+            : res;
           // Auto-promote the winning combo model to position #1 (opt-in flag).
-          if (res?.ok)
+          if (comboResult?.ok)
             await promoteSuccessfulComboModel(
               combo,
               m,
               settings as Record<string, unknown>,
               comboPromoteDeps
             );
-          return res;
+          return comboResult;
         }),
       isModelAvailable: checkModelAvailable,
       log,
@@ -892,10 +916,12 @@ async function handleChatImplementation(
       signal: request?.signal ?? null,
       correlationId: reqId,
     });
+    const response = restoreStagedLocalResourcePressureResponse(comboResponse);
 
     // ── Global Fallback Provider (#689) ────────────────────────────────────
     // If combo exhausted all models, try the global fallback before giving up.
     if (
+      !roxFallbackChain &&
       !response.ok &&
       [502, 503].includes(response.status) &&
       typeof (settings as any)?.globalFallbackModel === "string" &&
@@ -954,7 +980,7 @@ async function handleChatImplementation(
         await recordRejectedRequestUsage({
           status: response.status,
           model: body?.model || resolvedModelStr,
-          requestedModel: body?.model || resolvedModelStr,
+          requestedModel: roxRequestedModel || body?.model || resolvedModelStr,
           provider: resolveRejectedComboProvider(body?.model || resolvedModelStr, combo.name),
           endpoint: clientRawRequest?.endpoint,
           error: await getComboFailureLogError(response, combo.name),
@@ -1039,8 +1065,8 @@ async function handleSingleModelChat(
     comboStepId?: string | null;
     comboExecutionKey?: string | null;
     skipUpstreamRetry?: boolean;
+    preserveTerminalFailure?: boolean;
     allowRateLimitedConnection?: boolean;
-    preselectedCredentials?: any;
     cachedSettings?: any;
     providerId?: string | null;
     correlationId?: string | null;
@@ -1049,6 +1075,7 @@ async function handleSingleModelChat(
     reasoningDecision?: ReasoningRuleDecision | null;
     reasoningIntent?: ExtractedReasoningIntent | null;
     reasoningRequestTags?: string[];
+    requestedModel?: string | null;
     /**
      * Per-target abort signal from combo.ts's targetTimeoutRunner
      * (comboTargetTimeoutMs) — see the #7360 follow-up comment at the
@@ -1186,7 +1213,7 @@ async function handleSingleModelChat(
 
   // 2. Local pressure precedes availability/breaker gates and account selection.
   const pressureGuard = checkResourcePressureBeforeProviderWork();
-  if (pressureGuard) return pressureGuard.response;
+  if (pressureGuard) return markLocalResourcePressureResponse(pressureGuard.response);
   const providerProfile = await getRuntimeProviderProfile(provider);
   const gate = await checkPipelineGates(provider, model, {
     ignoreCircuitBreaker: forceLiveComboTest || hasForcedConnection,
@@ -1203,7 +1230,7 @@ async function handleSingleModelChat(
       await recordRejectedRequestUsage({
         status: gate.status,
         model,
-        requestedModel: body?.model || modelStr,
+        requestedModel: runtimeOptions.requestedModel || body?.model || modelStr,
         provider,
         endpoint: clientRawRequest?.endpoint,
         error: `[${gate.status}] Pipeline gate rejected`,
@@ -1501,10 +1528,11 @@ async function handleSingleModelChat(
         correlationId: runtimeOptions?.correlationId ?? null,
         modelPinned: runtimeOptions?.modelPinned ?? false,
         routingComboId: runtimeOptions?.routingComboId ?? null,
+        requestedModel: runtimeOptions?.requestedModel ?? null,
       });
       if (telemetry) telemetry.endPhase();
       if ("localResourcePressureResult" in execution) {
-        return execution.localResourcePressureResult.response;
+        return markLocalResourcePressureResponse(execution.localResourcePressureResult.response);
       }
       const { result, tlsFingerprintUsed } = execution;
 
@@ -1542,6 +1570,16 @@ async function handleSingleModelChat(
         if (telemetry) telemetry.startPhase("finalize");
         if (telemetry) telemetry.endPhase();
         return result.response;
+      }
+
+      // A ROX priority combo owns cross-target failover. Do not let a terminal
+      // upstream response be rewritten by same-provider account rotation before
+      // combo.ts can return that response unchanged to the caller.
+      if (
+        runtimeOptions.preserveTerminalFailure === true &&
+        ![408, 429, 500, 502, 503, 504].includes(result.status)
+      ) {
+        return withSelectedConnectionHeader(result.response, credentials?.connectionId);
       }
 
       // Missing Cloud Code project assignment is configuration, not a transient failure.

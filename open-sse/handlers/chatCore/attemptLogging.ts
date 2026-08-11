@@ -43,7 +43,7 @@ export type PersistAttemptLogsContext = {
   reqLogger: { getPipelinePayloads?: () => Record<string, unknown> | undefined } | null | undefined;
   pendingRequestId: unknown;
   clientRawRequest: { endpoint?: string } | null | undefined;
-  requestedModel: unknown;
+  requestedModel: string | null | undefined;
   credentials: { connectionId?: string } | null | undefined;
   startTime: number;
   body: unknown;

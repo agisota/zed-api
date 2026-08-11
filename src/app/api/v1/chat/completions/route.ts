@@ -27,6 +27,7 @@ import {
   withCompressionHeaderEcho,
 } from "@/shared/utils/compressionHeaderEcho";
 import { resolveModelAliasOnBody } from "@/lib/modelAliasResolver";
+import { isRoxPublicModelId } from "@/lib/roxPublicModelPolicy";
 
 let initPromise = null;
 
@@ -160,7 +161,7 @@ export async function POST(request) {
         }
 
         // Resolve model alias before forwarding to handleChat
-        if (parsedBody && typeof parsedBody === "object") {
+        if (isRecord(parsedBody) && !isRoxPublicModelId(parsedBody.model)) {
           await resolveModelAliasOnBody(parsedBody).catch(() => {
             /* swallow — fall through with original model */
           });

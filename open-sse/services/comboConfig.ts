@@ -97,6 +97,7 @@ const DEFAULT_COMBO_CONFIG = {
   strategy: "priority",
   maxRetries: 1,
   retryDelayMs: 2000,
+  roxPriorityRetryableOnly: false,
   fallbackDelayMs: 0,
   // #9100: round-robin combo concurrency was hard-capped at 3 concurrent
   // requests per model with no override — 5 concurrent requests through a
