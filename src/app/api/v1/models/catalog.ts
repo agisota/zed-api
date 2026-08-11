@@ -102,6 +102,12 @@ import { incrementCcDiscoveryHitCount } from "@/lib/db/ccDiscoveryMetrics";
 import { isFreeModel, providerHasFreeModels } from "@/shared/utils/freeModels";
 import { isCodexDiscoveryModelExcluded } from "@/shared/services/codexDiscoveryPolicy";
 import { buildErrorBody } from "@omniroute/open-sse/utils/error";
+import {
+	buildRoxPublicCatalog,
+	isOpenRouterCatalogEntry,
+	isRoxPublicCatalogOnly,
+	isRoxPublicModelId,
+} from "@/lib/roxPublicModelPolicy";
 
 // Public API of this module is preserved after the catalog helper extraction:
 // `isVisionModelId` (vision-detection-consistency.test.ts) and
@@ -1525,7 +1531,10 @@ async function buildUnifiedModelsResponseCore(
 
     // Filter by API key permissions if requested
     const apiKey = extractApiKey(request);
-    let finalModels = models;
+    const publicCatalogOnly = isRoxPublicCatalogOnly(settings);
+    let finalModels = publicCatalogOnly
+      ? buildRoxPublicCatalog(timestamp)
+      : models.filter((model) => !isOpenRouterCatalogEntry(model));
     if (apiKey) {
       const { isModelAllowedForKey, getApiKeyMetadata } = await import("@/lib/db/apiKeys");
 
@@ -1533,7 +1542,20 @@ async function buildUnifiedModelsResponseCore(
       // virtual models. #4806: build from the hidden qtSd/* combos directly — the base
       // `models` list drops hidden combos, so filtering it returned nothing (0 models).
       const keyMeta = await getApiKeyMetadata(apiKey);
-      if (keyMeta && keyMeta.allowedQuotas && keyMeta.allowedQuotas.length > 0) {
+      if (publicCatalogOnly) {
+        if (keyMeta) {
+          const filtered = [];
+          for (const model of finalModels) {
+            if (
+              isRoxPublicModelId(model.id) &&
+              (await isModelAllowedForKey(apiKey, model.id))
+            ) {
+              filtered.push(model);
+            }
+          }
+          finalModels = filtered;
+        }
+      } else if (keyMeta && keyMeta.allowedQuotas && keyMeta.allowedQuotas.length > 0) {
         const { buildQuotaExclusiveModels } = await import("@/lib/quota/quotaCombos");
         finalModels = await buildQuotaExclusiveModels(
           keyMeta.allowedQuotas,
@@ -1564,13 +1586,15 @@ async function buildUnifiedModelsResponseCore(
         finalModels = filtered;
       }
     }
-    // ?configuredOnly — hide models that have no eligible DB connection.
-    finalModels = applyCatalogPostFilters(request, finalModels, {
-      connections,
-      prefixMode,
-      aliasToProviderId,
-      hideNoThinkVariants: settings.hideNoThinkVariants === true,
-    });
+    if (!publicCatalogOnly) {
+      // ?configuredOnly — hide models that have no eligible DB connection.
+      finalModels = applyCatalogPostFilters(request, finalModels, {
+        connections,
+        prefixMode,
+        aliasToProviderId,
+        hideNoThinkVariants: settings.hideNoThinkVariants === true,
+      });
+    }
 
     const getDefaultContextFallback = (model: any): number | undefined => {
       if (typeof model.context_length === "number") return undefined;

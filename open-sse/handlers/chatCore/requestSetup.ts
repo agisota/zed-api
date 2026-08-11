@@ -46,6 +46,13 @@ export function resolveChatCoreRequestSetup(
         : undefined
       : undefined;
   const requestedModel =
-    typeof body?.model === "string" && body.model.trim().length > 0 ? body.model : model;
+    modelInfo &&
+    typeof modelInfo === "object" &&
+    typeof (modelInfo as { requestedModel?: unknown }).requestedModel === "string" &&
+    (modelInfo as { requestedModel: string }).requestedModel.trim().length > 0
+      ? (modelInfo as { requestedModel: string }).requestedModel
+      : typeof body?.model === "string" && body.model.trim().length > 0
+        ? body.model
+        : model;
   return { apiFormat, customModelTargetFormat, requestedModel };
 }

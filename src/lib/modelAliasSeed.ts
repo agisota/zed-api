@@ -3,8 +3,12 @@ import { deleteModelAlias, getModelAliases, setModelAlias } from "@/lib/db/model
 export const DEFAULT_MODEL_ALIAS_SEED = Object.freeze({
   "gemini-3.1-pro": "agy/gemini-pro-agent",
   "gemini-3.1-flash-lite-preview": "gemini/gemini-3.1-flash-lite",
+  "rox/explore": "kmc/kimi-for-coding",
+  "rox/standard": "opencode-go/kimi-k2.6",
+  "rox/max": "opencode-go/kimi-k3",
+  "rox/vision": "agy/gemini-3.6-flash-high",
+  "rox/fast": "agy/gemini-3.6-flash-low",
 });
-
 // Remove only aliases that still match a default value previously shipped by OmniRoute.
 // User-customized targets with the same alias key are intentionally preserved.
 export const RETIRED_DEFAULT_MODEL_ALIAS_SEED = Object.freeze({

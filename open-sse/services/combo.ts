@@ -705,6 +705,8 @@ export async function handleComboChat({
   const fallbackDelayMs = resolveDelayMs(config.fallbackDelayMs, 0);
   const maxSetRetries = config.maxSetRetries ?? 0;
   const setRetryDelayMs = resolveDelayMs(config.setRetryDelayMs, 2000);
+  const roxPriorityRetryableOnly =
+    strategy === "priority" && config.roxPriorityRetryableOnly === true;
 
   const targetResolution = await resolveComboTargetPipeline({
     body,
@@ -1201,6 +1203,7 @@ export async function handleComboChat({
             ...targetForAttempt,
             effectiveComboStrategy: strategy,
             failoverBeforeRetry: config.failoverBeforeRetry,
+            preserveTerminalFailure: roxPriorityRetryableOnly,
           });
 
           // Success — validate response quality before returning
@@ -1549,6 +1552,13 @@ export async function handleComboChat({
           // FIX 5: a local per-API-key token-limit 429 must not cool shared accounts.
           const isTokenLimitBreach =
             result.status === 429 && isTokenLimitBreachErrorBody(errorBody);
+
+          if (
+            roxPriorityRetryableOnly &&
+            (isTokenLimitBreach || ![408, 429, 500, 502, 503, 504].includes(result.status))
+          ) {
+            return { ok: false, response: result };
+          }
 
           // Fix #1681: Status 499 means client disconnected — stop combo loop immediately.
           // There is no point trying fallback models when nobody is listening.

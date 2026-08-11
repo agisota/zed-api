@@ -66,6 +66,31 @@ type ExecuteChatWithBreakerResult =
   | { result: any; tlsFingerprintUsed: boolean }
   | { localResourcePressureResult: ResourcePressureGuardResult; tlsFingerprintUsed: false };
 
+const localResourcePressureResponses = new WeakSet<Response>();
+const stagedResourcePressureResponses = new WeakMap<Response, Response>();
+
+export function markLocalResourcePressureResponse(response: Response): Response {
+  localResourcePressureResponses.add(response);
+  return response;
+}
+
+export function stageLocalResourcePressureResponseForRoxCombo(response: Response): Response {
+  if (!localResourcePressureResponses.has(response)) return response;
+
+  const restoredResponse = response.clone();
+  const terminalResponse = new Response(response.body, {
+    status: HTTP_STATUS.BAD_REQUEST,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+  stagedResourcePressureResponses.set(terminalResponse, restoredResponse);
+  return terminalResponse;
+}
+
+export function restoreStagedLocalResourcePressureResponse(response: Response): Response {
+  return stagedResourcePressureResponses.get(response) || response;
+}
+
 function getHeaderValue(headers: Record<string, unknown> | null | undefined, name: string) {
   if (!headers || typeof headers !== "object") return "";
   const lowerName = name.toLowerCase();
@@ -420,6 +445,7 @@ export async function executeChatWithBreaker({
   correlationId = null,
   modelPinned = false,
   routingComboId = null,
+  requestedModel = null,
 }: ExecuteChatWithBreakerOptions): Promise<ExecuteChatWithBreakerResult> {
   let tlsFingerprintUsed = false;
   const normalizedTrafficType: TrafficType =
@@ -436,6 +462,7 @@ export async function executeChatWithBreaker({
 
   const pressureGuard = checkResourcePressureBeforeProviderWork();
   if (pressureGuard) {
+    markLocalResourcePressureResponse(pressureGuard.response);
     return { localResourcePressureResult: pressureGuard, tlsFingerprintUsed: false };
   }
 
@@ -451,6 +478,7 @@ export async function executeChatWithBreaker({
               extendedContext,
               apiFormat: modelApiFormat,
               targetFormat: modelTargetFormat,
+              requestedModel,
             },
             credentials: refreshedCredentials,
             log: handlerLog,

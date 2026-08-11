@@ -208,6 +208,18 @@ Authorization: Bearer your-api-key
 → Returns all chat, embedding, and image models + combos in OpenAI format
 ```
 
+When the operator enables `ROX_PUBLIC_CATALOG_ONLY=true` (or the matching dashboard setting), this endpoint returns the stable ROX public catalog only. Internal provider targets remain routable but are not advertised. The catalog contains:
+
+| Model | Intended workload | Advertised context | Image input |
+| --- | --- | ---: | :---: |
+| `rox/explore` | Coding and exploratory work | 262,144 tokens | No |
+| `rox/standard` | General reasoning and coding | 262,144 tokens | No |
+| `rox/max` | Long-context reasoning | 1,048,576 tokens | No |
+| `rox/vision` | Multimodal reasoning | 1,048,576 tokens | Yes |
+| `rox/fast` | Lower-latency general work | 1,048,576 tokens | No |
+
+Use these public IDs in chat-completion requests. The gateway owns provider selection and fallback; requests never need an internal model identifier. A fallback provider can impose a lower active context limit, which the gateway handles with its normal context processing. `rox/max` has no fallback, because a lower-context fallback could silently truncate a long request.
+
 ### No-thinking model variants
 
 For thinking-capable Claude models, `/v1/models` also advertises a **no-thinking** variant whose id is prefixed with `claude-3-omniroute-no-thinking/`:
