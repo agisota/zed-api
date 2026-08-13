@@ -103,10 +103,10 @@ import { isFreeModel, providerHasFreeModels } from "@/shared/utils/freeModels";
 import { isCodexDiscoveryModelExcluded } from "@/shared/services/codexDiscoveryPolicy";
 import { buildErrorBody } from "@omniroute/open-sse/utils/error";
 import {
-	buildRoxPublicCatalog,
-	isOpenRouterCatalogEntry,
-	isRoxPublicCatalogOnly,
-	isRoxPublicModelId,
+  buildRoxPublicCatalog,
+  isOpenRouterCatalogEntry,
+  isRoxPublicCatalogOnly,
+  isRoxPublicModelId,
 } from "@/lib/roxPublicModelPolicy";
 
 // Public API of this module is preserved after the catalog helper extraction:
@@ -1546,10 +1546,7 @@ async function buildUnifiedModelsResponseCore(
         if (keyMeta) {
           const filtered = [];
           for (const model of finalModels) {
-            if (
-              isRoxPublicModelId(model.id) &&
-              (await isModelAllowedForKey(apiKey, model.id))
-            ) {
+            if (isRoxPublicModelId(model.id) && (await isModelAllowedForKey(apiKey, model.id))) {
               filtered.push(model);
             }
           }
@@ -1572,13 +1569,17 @@ async function buildUnifiedModelsResponseCore(
         // Without this branch, isModelAllowedForKey returns false for every model
         // (metadata missing → deny), collapsing /v1/models to 0 entries.
       } else {
-        const filtered = [];
-        for (const m of models) {
+        const filtered: Array<Record<string, unknown>> = [];
+        // Scope this key against the already-policy-filtered collection: iterating the
+        // raw `models` here let a permitted-but-excluded model back into the response.
+        for (const m of finalModels) {
           // m.id is the full identifier (e.g. openai/gpt-4o), m.root is the raw model string
           // check either one as the config could use either patterns
+          const modelId = typeof m.id === "string" ? m.id : null;
+          const modelRoot = typeof m.root === "string" ? m.root : null;
           if (
-            (await isModelAllowedForKey(apiKey, m.id)) ||
-            (await isModelAllowedForKey(apiKey, m.root))
+            (await isModelAllowedForKey(apiKey, modelId)) ||
+            (await isModelAllowedForKey(apiKey, modelRoot))
           ) {
             filtered.push(m);
           }
@@ -1587,6 +1588,8 @@ async function buildUnifiedModelsResponseCore(
       }
     }
     if (!publicCatalogOnly) {
+      // Defense in depth: no permission/quota branch may reintroduce OpenRouter.
+      finalModels = finalModels.filter((model) => !isOpenRouterCatalogEntry(model));
       // ?configuredOnly — hide models that have no eligible DB connection.
       finalModels = applyCatalogPostFilters(request, finalModels, {
         connections,
