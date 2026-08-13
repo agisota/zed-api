@@ -47,7 +47,13 @@ const ROX_PUBLIC_MODEL_SPECS: readonly RoxPublicModelSpec[] = [
     contextLength: 1_048_576,
     maxInputTokens: 1_048_576,
     maxOutputTokens: 131_072,
-    capabilities: { tool_calling: true, reasoning: true, thinking: true, temperature: true, vision: true },
+    capabilities: {
+      tool_calling: true,
+      reasoning: true,
+      thinking: true,
+      temperature: true,
+      vision: true,
+    },
   },
   {
     id: "rox/fast",
@@ -103,9 +109,26 @@ export function isRoxPublicCatalogOnly(settings: Record<string, unknown>): boole
 }
 
 export function isOpenRouterCatalogEntry(entry: Record<string, unknown>): boolean {
+  const ownerFields = [entry.owned_by, entry.provider, entry.providerId, entry.provider_id];
+  if (
+    ownerFields.some(
+      (value) => typeof value === "string" && value.trim().toLowerCase() === "openrouter"
+    )
+  ) {
+    return true;
+  }
+
   return [entry.id, entry.root, entry.parent]
     .filter((value): value is string => typeof value === "string")
-    .some((value) => value.toLowerCase().includes("openrouter_"));
+    .some((value) => {
+      const normalized = value.trim().toLowerCase();
+      return (
+        normalized === "openrouter" ||
+        normalized.startsWith("openrouter/") ||
+        normalized.includes("/openrouter/") ||
+        normalized.includes("openrouter_")
+      );
+    });
 }
 
 export function buildRoxPublicCatalog(timestamp: number): Array<Record<string, unknown>> {
