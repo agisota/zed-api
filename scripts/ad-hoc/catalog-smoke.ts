@@ -1,23 +1,26 @@
 /**
  * Isolated catalog staging smoke — no Next/Turbopack production build.
  *
- * Serves GET /v1/models through getUnifiedModelsResponse on 127.0.0.1 and
- * asserts the public ROX plane plus OpenRouter absence.
+ * Binds 127.0.0.1 only. Do not point this at api.rox.one.
  *
- *   DISABLE_SQLITE_AUTO_BACKUP=true ROX_PUBLIC_CATALOG_ONLY=true \
- *     node --import tsx/esm \
- *       --import ./open-sse/utils/setupPolyfill.ts \
- *       --import ./tests/_setup/isolateDataDir.ts \
- *       scripts/staging/catalog-smoke.ts
+ *   node --import tsx/esm \
+ *     --import ./open-sse/utils/setupPolyfill.ts \
+ *     scripts/ad-hoc/catalog-smoke.ts
  *
- * Pass --listen to keep the local server up after the assertions.
+ * Pass --listen to keep the local server after both assertion passes.
  */
+import "./catalog-smoke-data-dir.ts";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { getUnifiedModelsResponse } from "../../src/app/api/v1/models/catalog.ts";
+import { buildErrorBody } from "../../open-sse/utils/error.ts";
+import {
+  getUnifiedModelsResponse,
+  __resetCatalogBuilderRunsForTest,
+} from "../../src/app/api/v1/models/catalog.ts";
 import { createProviderConnection } from "../../src/lib/db/providers.ts";
+import { ROX_CATALOG_SMOKE_MARKER } from "./catalog-smoke-data-dir.ts";
 
 const PUBLIC_IDS = ["rox/explore", "rox/standard", "rox/max", "rox/vision", "rox/fast"] as const;
 const OPENROUTER_UPSTREAM_ID = "openai/gpt-4o-staging-smoke";
@@ -26,7 +29,13 @@ const KEEP_LISTENING = process.argv.includes("--listen");
 function dataDir(): string {
   const dir = process.env.DATA_DIR?.trim();
   if (!dir) {
-    throw new Error("DATA_DIR must be set (isolateDataDir.ts or an explicit temp dir)");
+    throw new Error("DATA_DIR missing; load scripts/ad-hoc/catalog-smoke-data-dir.ts via --import");
+  }
+  const marker = path.join(dir, ROX_CATALOG_SMOKE_MARKER);
+  if (!fs.existsSync(marker)) {
+    throw new Error(
+      `DATA_DIR ${dir} is not harness-owned; load scripts/ad-hoc/catalog-smoke-data-dir.ts via --import`
+    );
   }
   return dir;
 }
@@ -99,11 +108,35 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   res.end(Buffer.from(await response.arrayBuffer()));
 }
 
+async function getCatalog(catalogUrl: string): Promise<{
+  status: number;
+  models: Array<Record<string, unknown>>;
+  ids: string[];
+}> {
+  __resetCatalogBuilderRunsForTest();
+  const response = await fetch(catalogUrl);
+  const body = (await response.json()) as { data?: Array<Record<string, unknown>> };
+  const models = Array.isArray(body.data) ? body.data : [];
+  return {
+    status: response.status,
+    models,
+    ids: models.map((model) => String(model.id ?? "")),
+  };
+}
+
+function assertExactPublicIds(ids: string[]): void {
+  const sorted = [...ids].sort();
+  const expected = [...PUBLIC_IDS].sort();
+  if (sorted.length !== expected.length || sorted.some((id, index) => id !== expected[index])) {
+    throw new Error(
+      `public catalog must be exactly ${expected.join(", ")}; got ${ids.join(", ") || "(empty)"}`
+    );
+  }
+}
+
 async function main(): Promise<void> {
   process.env.API_KEY_SECRET ||= "rox-catalog-staging-smoke-secret";
-  process.env.DISABLE_SQLITE_AUTO_BACKUP ||= "true";
-  process.env.ROX_PUBLIC_CATALOG_ONLY ||= "true";
-  process.env.APP_LOG_TO_FILE ||= "false";
+  const ownedDir = dataDir();
 
   seedOpenRouterCatalogCache();
   await createProviderConnection({
@@ -118,9 +151,18 @@ async function main(): Promise<void> {
 
   const server = http.createServer((req, res) => {
     void handle(req, res).catch((error) => {
+      const body = buildErrorBody(
+        500,
+        error instanceof Error ? error.message : String(error),
+        undefined,
+        {
+          type: "server_error",
+          code: "INTERNAL_PROXY_ERROR",
+        }
+      );
       res.statusCode = 500;
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ error: { message: String(error) } }));
+      res.end(JSON.stringify(body));
     });
   });
 
@@ -134,24 +176,40 @@ async function main(): Promise<void> {
   }
 
   const catalogUrl = `http://127.0.0.1:${address.port}/v1/models`;
-  const response = await fetch(catalogUrl);
-  const body = (await response.json()) as { data?: Array<Record<string, unknown>> };
-  const models = Array.isArray(body.data) ? body.data : [];
-  const ids = models.map((model) => String(model.id ?? ""));
-  const openRouterHits = models.filter(mentionsOpenRouter);
-  const missingPublic = PUBLIC_IDS.filter((id) => !ids.includes(id));
+
+  process.env.ROX_PUBLIC_CATALOG_ONLY = "true";
+  const publicPass = await getCatalog(catalogUrl);
+  if (publicPass.status !== 200) {
+    throw new Error(`public-only GET /v1/models returned ${publicPass.status}`);
+  }
+  assertExactPublicIds(publicPass.ids);
+
+  process.env.ROX_PUBLIC_CATALOG_ONLY = "false";
+  const normalPass = await getCatalog(catalogUrl);
+  if (normalPass.status !== 200) {
+    throw new Error(`normal GET /v1/models returned ${normalPass.status}`);
+  }
+  const openRouterHits = normalPass.models.filter(mentionsOpenRouter);
+  if (openRouterHits.length > 0) {
+    throw new Error(`OpenRouter leaked ${openRouterHits.length} catalog entries in normal mode`);
+  }
 
   const report = {
     sha: process.env.STAGING_GIT_SHA ?? "local",
     listen: `127.0.0.1:${address.port}`,
     catalogUrl,
-    status: response.status,
-    modelCount: models.length,
-    publicIdsPresent: PUBLIC_IDS.filter((id) => ids.includes(id)),
-    missingPublic,
-    openRouterCount: openRouterHits.length,
-    openRouterSample: openRouterHits.slice(0, 5).map((model) => model.id),
-    dataDir: dataDir(),
+    dataDir: ownedDir,
+    publicOnly: {
+      status: publicPass.status,
+      modelCount: publicPass.ids.length,
+      ids: publicPass.ids,
+    },
+    normal: {
+      status: normalPass.status,
+      modelCount: normalPass.ids.length,
+      openRouterCount: openRouterHits.length,
+      openRouterSample: openRouterHits.slice(0, 5).map((model) => model.id),
+    },
     hostname: os.hostname(),
     pid: process.pid,
   };
@@ -160,17 +218,6 @@ async function main(): Promise<void> {
   fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`wrote ${reportPath}\n`);
-
-  if (response.status !== 200) {
-    throw new Error(`GET /v1/models returned ${response.status}`);
-  }
-  if (missingPublic.length > 0) {
-    throw new Error(`missing public ROX ids: ${missingPublic.join(", ")}`);
-  }
-  if (openRouterHits.length > 0) {
-    throw new Error(`OpenRouter leaked ${openRouterHits.length} catalog entries`);
-  }
-
   process.stdout.write("catalog staging smoke: PASS\n");
 
   if (KEEP_LISTENING) {
