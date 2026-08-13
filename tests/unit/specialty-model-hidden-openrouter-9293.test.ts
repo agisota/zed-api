@@ -10,8 +10,13 @@
  *
  * This test: seeds an OpenRouter connection, hides two OpenRouter specialty
  * models (audio: google/chirp-3, image: black-forest-labs/flux.2-pro), then
- * verifies the hidden models are excluded from the /v1/models catalog while
- * non-hidden models still appear.
+ * verifies the hidden models are excluded from the /v1/models catalog.
+ *
+ * ROX divergence: this fork publishes no OpenRouter model at all, so the catalog
+ * can no longer distinguish "hidden" from "visible" for this provider — the
+ * non-hidden control (deepgram/nova-3) is withheld too. The hidden-flag storage
+ * and path matching that #9293 fixed are asserted directly against
+ * getModelIsHidden below; the catalog half now pins the ROX exclusion instead.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -114,8 +119,12 @@ test("#9293 hidden OpenRouter specialty models are excluded from /v1/models cata
     "#9293 RED: hidden image model openrouter/black-forest-labs/flux.2-pro should NOT appear in catalog"
   );
 
-  // Verify non-hidden audio models from OpenRouter still appear
-  // deepgram/nova-3 is not hidden, so it should be present
+  // ROX: the non-hidden control is withheld as well — no OpenRouter specialty
+  // model is published, hidden flag or not.
   const visibleAudio = audioModels.find((m) => String(m.id).endsWith("deepgram/nova-3"));
-  assert.ok(visibleAudio, "non-hidden audio model deepgram/nova-3 should still appear in catalog");
+  assert.equal(visibleAudio, undefined, "ROX excludes OpenRouter audio models from the catalog");
+  assert.deepEqual(
+    body.data.filter((m) => String(m.id).startsWith("openrouter/")).map((m) => m.id),
+    []
+  );
 });

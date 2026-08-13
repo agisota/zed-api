@@ -71,22 +71,26 @@ test("#4264 normalizeDiscoveredModels captures vision from OpenRouter architectu
   assert.equal(byId["some/text-only"].supportsVision, undefined);
 });
 
-test("#4264 synced OpenRouter vision model surfaces capabilities.vision in /v1/models", async () => {
+// ROX divergence: this fork never publishes OpenRouter models (see
+// roxPublicModelPolicy.isOpenRouterCatalogEntry), so the catalog-level half of
+// #4264 is asserted through another provider that takes the same synced path.
+// The OpenRouter exclusion itself is pinned by the last test in this file.
+test("#4264 synced vision model surfaces capabilities.vision in /v1/models", async () => {
   const connection = await providersDb.createProviderConnection({
-    provider: "openrouter",
+    provider: "deepinfra",
     authType: "apikey",
-    name: "openrouter-test",
-    apiKey: "sk-or-test",
+    name: "deepinfra-test",
+    apiKey: "sk-di-test",
     isActive: true,
     testStatus: "active",
     providerSpecificData: {},
   });
 
-  // Simulate "import models": persist the raw OpenRouter /models entries (with
+  // Simulate "import models": persist raw OpenRouter-shaped /models entries (with
   // architecture) through the real discovery path. Having synced models makes the
-  // catalog use the synced path (the OpenRouter live-enrichment block is skipped),
-  // which is exactly the path that dropped vision before this fix.
-  await modelDiscovery.persistDiscoveredModels("openrouter", connection.id, [
+  // catalog use the synced path (the live-enrichment block is skipped), which is
+  // exactly the path that dropped vision before this fix.
+  await modelDiscovery.persistDiscoveredModels("deepinfra", connection.id, [
     {
       id: "nex-agi/nex-n2-pro:free",
       name: "Nex AGI: Nex-N2-Pro (free)",
@@ -107,9 +111,7 @@ test("#4264 synced OpenRouter vision model surfaces capabilities.vision in /v1/m
   assert.equal(response.status, 200);
   const body = (await response.json()) as any;
 
-  const visionModel = body.data.find((m: any) =>
-    String(m.id).endsWith("nex-agi/nex-n2-pro:free")
-  );
+  const visionModel = body.data.find((m: any) => String(m.id).endsWith("nex-agi/nex-n2-pro:free"));
   assert.ok(visionModel, `expected the synced vision model in the catalog`);
   // RED before the fix: synced models carried no capabilities at all.
   assert.equal(visionModel.capabilities?.vision, true);
@@ -119,5 +121,44 @@ test("#4264 synced OpenRouter vision model surfaces capabilities.vision in /v1/m
   assert.ok(
     !textModel.capabilities || textModel.capabilities.vision !== true,
     `text-only model must not be marked vision-capable`
+  );
+});
+
+test("ROX withholds synced OpenRouter models from /v1/models", async () => {
+  const connection = await providersDb.createProviderConnection({
+    provider: "openrouter",
+    authType: "apikey",
+    name: "openrouter-test",
+    apiKey: "sk-or-test",
+    isActive: true,
+    testStatus: "active",
+    providerSpecificData: {},
+  });
+
+  await modelDiscovery.persistDiscoveredModels("openrouter", connection.id, [
+    {
+      id: "nex-agi/nex-n2-pro:free",
+      name: "Nex AGI: Nex-N2-Pro (free)",
+      architecture: { modality: "text+image->text", input_modalities: ["text", "image"] },
+      context_length: 262144,
+    },
+  ]);
+
+  const response = await v1ModelsCatalog.getUnifiedModelsResponse(
+    new Request("http://localhost/api/v1/models")
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { data: Array<Record<string, unknown>> };
+
+  // Syncing a provider bypasses the live OpenRouter block, so this is the second
+  // way an OpenRouter model can reach the catalog. Both are excluded.
+  assert.deepEqual(
+    body.data
+      .filter(
+        (model) =>
+          String(model.owned_by) === "openrouter" || String(model.id).startsWith("openrouter/")
+      )
+      .map((model) => model.id),
+    []
   );
 });
