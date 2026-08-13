@@ -77,6 +77,24 @@ test("ROX catalog filter recognizes every OpenRouter representation", () => {
     }),
     true
   );
+  assert.equal(
+    isOpenRouterCatalogEntry({
+      id: "claude/combo/qtSd/openrouter/glm/glm-4",
+      owned_by: "combo",
+      root: "qtSd/openrouter/glm/glm-4",
+    }),
+    false,
+    "claude/combo aliases of glm quota ids must survive even when the group slug is openrouter"
+  );
+  assert.equal(
+    isOpenRouterCatalogEntry({
+      id: "claude/combo/qtSd/pool/openrouter/google/gemini-2.5-flash",
+      owned_by: "combo",
+      root: "qtSd/pool/openrouter/google/gemini-2.5-flash",
+    }),
+    true,
+    "claude/combo aliases of OpenRouter quota ids stay excluded"
+  );
 });
 
 test("ROX fallback chains start with the public spec target and never downgrade max", () => {

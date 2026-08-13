@@ -56,3 +56,28 @@ test("finalizeCatalogResponse keeps glm quota ids whose group slug is openrouter
   const body = (await response.json()) as { data: Array<{ id: string }> };
   assert.deepEqual(body.data.map((model) => model.id), ["qtSd/openrouter/glm/glm-4"]);
 });
+
+test("finalizeCatalogResponse keeps claude/combo aliases of glm quota ids", async () => {
+  const request = new Request("http://127.0.0.1/v1/models");
+  const finalModels = [
+    {
+      id: "qtSd/openrouter/glm/glm-4",
+      owned_by: "combo",
+      root: "qtSd/openrouter/glm/glm-4",
+      parent: null,
+    },
+    {
+      id: "claude/combo/qtSd/openrouter/glm/glm-4",
+      owned_by: "combo",
+      root: "qtSd/openrouter/glm/glm-4",
+      parent: null,
+    },
+  ];
+  const response = await finalizeCatalogResponse(request, finalModels, () => undefined, {});
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { data: Array<{ id: string }> };
+  assert.deepEqual(body.data.map((model) => model.id).sort(), [
+    "claude/combo/qtSd/openrouter/glm/glm-4",
+    "qtSd/openrouter/glm/glm-4",
+  ]);
+});

@@ -129,9 +129,14 @@ export function isOpenRouterCatalogEntry(entry: Record<string, unknown>): boolea
  * Quota ids are `qtSd/<groupSlug>/<provider>/<model>`. A group named "Open Router"
  * slugs to `openrouter` and must not hide a glm (or any non-OpenRouter) pool.
  * Only the provider segment decides OpenRouter for those ids.
+ *
+ * Discovery aliases wrap the real id (`claude/combo/<qtSd/...>`, `claude/<qtSd/...>`,
+ * `no-think/<qtSd/...>`). Parse from the embedded `qtSd/` rather than treating
+ * `/openrouter/` in the group-slug position as a provider.
  */
 function identityLooksLikeOpenRouter(value: string): boolean {
-  const quota = parseQuotaModelName(value);
+  const quota =
+    parseQuotaModelName(value) ?? parseQuotaModelName(unwrapQuotaModelId(value));
   if (quota) {
     const provider = quota.provider.trim().toLowerCase();
     return (
@@ -148,6 +153,11 @@ function identityLooksLikeOpenRouter(value: string): boolean {
     normalized.includes("/openrouter/") ||
     normalized.includes("openrouter_")
   );
+}
+
+function unwrapQuotaModelId(value: string): string {
+  const index = value.indexOf("qtSd/");
+  return index > 0 ? value.slice(index) : value;
 }
 
 export function buildRoxPublicCatalog(timestamp: number): Array<Record<string, unknown>> {

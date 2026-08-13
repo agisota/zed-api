@@ -1,1 +1,1 @@
-- **fix(catalog):** `/v1/models` fail-closes OpenRouter at serialize time and keeps callable `qtSd/<group>/<provider>/<model>` ids when only the quota group slug is `openrouter` ([#4](https://github.com/agisota/zed-api/pull/4))
+- **fix(catalog):** `/v1/models` fail-closes OpenRouter at serialize time, keeps callable `qtSd/<group>/<provider>/<model>` ids when only the quota group slug is `openrouter`, and preserves `claude/combo/` discovery aliases of those ids ([#4](https://github.com/agisota/zed-api/pull/4))
