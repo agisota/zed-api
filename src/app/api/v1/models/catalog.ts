@@ -1588,7 +1588,10 @@ async function buildUnifiedModelsResponseCore(
       }
     }
     if (!publicCatalogOnly) {
-      // Defense in depth: no permission/quota branch may reintroduce OpenRouter.
+      // Drop OpenRouter before post-filters so effort/no-think variants are not
+      // derived from excluded entries, then again after: functional-gateway
+      // mirrors can synthesize `openrouter/<owner>/<model>` from remaining models
+      // because OpenRouter is a passthrough provider.
       finalModels = finalModels.filter((model) => !isOpenRouterCatalogEntry(model));
       // ?configuredOnly — hide models that have no eligible DB connection.
       finalModels = applyCatalogPostFilters(request, finalModels, {
@@ -1597,6 +1600,7 @@ async function buildUnifiedModelsResponseCore(
         aliasToProviderId,
         hideNoThinkVariants: settings.hideNoThinkVariants === true,
       });
+      finalModels = finalModels.filter((model) => !isOpenRouterCatalogEntry(model));
     }
 
     const getDefaultContextFallback = (model: any): number | undefined => {

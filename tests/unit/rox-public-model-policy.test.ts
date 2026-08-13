@@ -35,6 +35,8 @@ test("ROX catalog filter recognizes every OpenRouter representation", () => {
     true
   );
   assert.equal(isOpenRouterCatalogEntry({ id: "alias/gpt-4o", owned_by: "OpenRouter" }), true);
+  assert.equal(isOpenRouterCatalogEntry({ id: "alias/gpt-4o", providerId: "openrouter" }), true);
+  assert.equal(isOpenRouterCatalogEntry({ id: "alias/gpt-4o", provider_id: "OpenRouter" }), true);
   assert.equal(isOpenRouterCatalogEntry({ id: "vendor/openrouter/model" }), true);
   assert.equal(
     isOpenRouterCatalogEntry({

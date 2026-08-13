@@ -6,6 +6,8 @@ import path from "node:path";
 
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-rox-openrouter-"));
 const ORIGINAL_ROX_PUBLIC_CATALOG_ONLY = process.env.ROX_PUBLIC_CATALOG_ONLY;
+const ORIGINAL_DATA_DIR = process.env.DATA_DIR;
+const ORIGINAL_API_KEY_SECRET = process.env.API_KEY_SECRET;
 
 process.env.DATA_DIR = TEST_DATA_DIR;
 process.env.API_KEY_SECRET = process.env.API_KEY_SECRET || "rox-openrouter-exclusion-test-secret";
@@ -93,9 +95,15 @@ async function fetchCatalog(apiKey?: string): Promise<ModelsCatalogResponseBody>
  */
 function openRouterEntries(body: ModelsCatalogResponseBody): CatalogModel[] {
   return body.data.filter((model) =>
-    [model.id, model.root, model.parent, model.owned_by, model.provider].some(
-      (value) => typeof value === "string" && value.toLowerCase().includes("openrouter")
-    )
+    [
+      model.id,
+      model.root,
+      model.parent,
+      model.owned_by,
+      model.provider,
+      model.providerId,
+      model.provider_id,
+    ].some((value) => typeof value === "string" && value.toLowerCase().includes("openrouter"))
   );
 }
 
@@ -104,15 +112,21 @@ test.beforeEach(async () => {
   await resetStorage();
 });
 
+function restoreEnv(name: string, original: string | undefined): void {
+  if (original === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = original;
+  }
+}
+
 test.after(() => {
   core.resetDbInstance();
   apiKeysDb.resetApiKeyState();
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-  if (ORIGINAL_ROX_PUBLIC_CATALOG_ONLY === undefined) {
-    delete process.env.ROX_PUBLIC_CATALOG_ONLY;
-  } else {
-    process.env.ROX_PUBLIC_CATALOG_ONLY = ORIGINAL_ROX_PUBLIC_CATALOG_ONLY;
-  }
+  restoreEnv("ROX_PUBLIC_CATALOG_ONLY", ORIGINAL_ROX_PUBLIC_CATALOG_ONLY);
+  restoreEnv("DATA_DIR", ORIGINAL_DATA_DIR);
+  restoreEnv("API_KEY_SECRET", ORIGINAL_API_KEY_SECRET);
 });
 
 test("catalog fixture really emits a canonical OpenRouter entry before policy filtering", async () => {
@@ -189,4 +203,47 @@ test("a DB-backed wildcard key keeps its other models but never OpenRouter", asy
     openRouterEntries(body).map((model) => model.id),
     []
   );
+});
+
+test("functional-gateway mirrors cannot reintroduce OpenRouter after post-filters", async () => {
+  const { applyCatalogPostFilters } =
+    await import("../../src/app/api/v1/models/catalogResponse.ts");
+  const { setFeatureFlagOverride, removeFeatureFlagOverride } =
+    await import("../../src/lib/db/featureFlags.ts");
+
+  setFeatureFlagOverride("EXPOSE_FUNCTIONAL_GATEWAY_MIRRORS", "true");
+  try {
+    const postFilterLeak = applyCatalogPostFilters(
+      new Request("http://localhost/api/v1/models"),
+      [{ id: "openai/gpt-4o", owned_by: "openai", root: "gpt-4o" }],
+      {
+        connections: [
+          {
+            id: "openrouter-fg-conn",
+            provider: "openrouter",
+            isActive: true,
+            providerSpecificData: {},
+          },
+        ],
+        prefixMode: "dual",
+        aliasToProviderId: {},
+      }
+    );
+    assert.ok(
+      postFilterLeak.some((model) => model.id === "openrouter/openai/gpt-4o"),
+      "fixture must actually synthesize an OpenRouter mirror, otherwise the catalog assertion is vacuous"
+    );
+
+    const body = await fetchCatalog();
+    assert.ok(
+      body.data.length > 0,
+      "catalog must not be empty, otherwise the assertion is vacuous"
+    );
+    assert.deepEqual(
+      openRouterEntries(body).map((model) => model.id),
+      []
+    );
+  } finally {
+    removeFeatureFlagOverride("EXPOSE_FUNCTIONAL_GATEWAY_MIRRORS");
+  }
 });
