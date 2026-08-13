@@ -1,3 +1,5 @@
+import { parseQuotaModelName } from "@/lib/quota/quotaModelNaming";
+
 export interface RoxPublicModelSpec {
   id: "rox/explore" | "rox/standard" | "rox/max" | "rox/vision" | "rox/fast";
   target: string;
@@ -120,15 +122,32 @@ export function isOpenRouterCatalogEntry(entry: Record<string, unknown>): boolea
 
   return [entry.id, entry.root, entry.parent]
     .filter((value): value is string => typeof value === "string")
-    .some((value) => {
-      const normalized = value.trim().toLowerCase();
-      return (
-        normalized === "openrouter" ||
-        normalized.startsWith("openrouter/") ||
-        normalized.includes("/openrouter/") ||
-        normalized.includes("openrouter_")
-      );
-    });
+    .some((value) => identityLooksLikeOpenRouter(value));
+}
+
+/**
+ * Quota ids are `qtSd/<groupSlug>/<provider>/<model>`. A group named "Open Router"
+ * slugs to `openrouter` and must not hide a glm (or any non-OpenRouter) pool.
+ * Only the provider segment decides OpenRouter for those ids.
+ */
+function identityLooksLikeOpenRouter(value: string): boolean {
+  const quota = parseQuotaModelName(value);
+  if (quota) {
+    const provider = quota.provider.trim().toLowerCase();
+    return (
+      provider === "openrouter" ||
+      provider.startsWith("openrouter/") ||
+      provider.includes("openrouter_")
+    );
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "openrouter" ||
+    normalized.startsWith("openrouter/") ||
+    normalized.includes("/openrouter/") ||
+    normalized.includes("openrouter_")
+  );
 }
 
 export function buildRoxPublicCatalog(timestamp: number): Array<Record<string, unknown>> {

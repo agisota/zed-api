@@ -128,3 +128,36 @@ test("#9293 hidden OpenRouter specialty models are excluded from /v1/models cata
     []
   );
 });
+
+test("#9293 nested specialty ids honor hidden flags on a non-OpenRouter provider", async () => {
+  const connection = await providersDb.createProviderConnection({
+    provider: "together",
+    authType: "apikey",
+    name: "together-9293",
+    apiKey: "sk-together-9293",
+    isActive: true,
+    testStatus: "active",
+    providerSpecificData: {},
+  });
+  assert.ok(connection?.id, "Together connection created");
+
+  mergeModelCompatOverride("together", "openai/whisper-large-v3", { isHidden: true });
+  assert.equal(getModelIsHidden("together", "openai/whisper-large-v3"), true);
+
+  const response = await v1ModelsCatalog.getUnifiedModelsResponse(
+    new Request("http://localhost/v1/models")
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { data: Array<{ id: string; type?: string }> };
+  const audioModels = body.data.filter((m) => m.type === "audio");
+
+  assert.equal(
+    audioModels.find((m) => String(m.id) === "together/openai/whisper-large-v3"),
+    undefined,
+    "hidden nested together audio id must not appear — .split('/').pop() would miss this flag"
+  );
+  assert.ok(
+    audioModels.find((m) => String(m.id) === "together/openai/whisper-large-v3-turbo"),
+    "sibling nested together audio id must still appear so the hidden-flag path is not vacuous"
+  );
+});
