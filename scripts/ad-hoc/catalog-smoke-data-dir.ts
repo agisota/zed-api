@@ -22,7 +22,11 @@ fs.writeFileSync(path.join(dir, ROX_CATALOG_SMOKE_MARKER), `${dir}\n`, "utf8");
 process.on("exit", () => {
   try {
     fs.rmSync(dir, { recursive: true, force: true });
-  } catch {
-    // OS reaps temp dirs.
+  } catch (error) {
+    process.stderr.write(
+      `catalog-smoke: failed to remove harness DATA_DIR ${dir}: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`
+    );
   }
 });

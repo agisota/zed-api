@@ -20,9 +20,14 @@ import {
   __resetCatalogBuilderRunsForTest,
 } from "../../src/app/api/v1/models/catalog.ts";
 import { createProviderConnection } from "../../src/lib/db/providers.ts";
+import { updateSettings } from "../../src/lib/db/settings.ts";
 import { ROX_CATALOG_SMOKE_MARKER } from "./catalog-smoke-data-dir.ts";
+import {
+  assertExactPublicIds,
+  assertNormalCatalogHonesty,
+  mentionsOpenRouter,
+} from "./catalog-smoke-lib.ts";
 
-const PUBLIC_IDS = ["rox/explore", "rox/standard", "rox/max", "rox/vision", "rox/fast"] as const;
 const OPENROUTER_UPSTREAM_ID = "openai/gpt-4o-staging-smoke";
 const KEEP_LISTENING = process.argv.includes("--listen");
 
@@ -62,35 +67,6 @@ function seedOpenRouterCatalogCache(): void {
   );
 }
 
-function mentionsOpenRouter(value: unknown): boolean {
-  if (value == null) return false;
-  if (typeof value === "string") {
-    const lowered = value.trim().toLowerCase();
-    return (
-      lowered === "openrouter" ||
-      lowered.startsWith("openrouter/") ||
-      lowered.includes("/openrouter/") ||
-      lowered.includes("openrouter_")
-    );
-  }
-  if (Array.isArray(value)) return value.some(mentionsOpenRouter);
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    for (const key of [
-      "id",
-      "root",
-      "parent",
-      "owned_by",
-      "provider",
-      "providerId",
-      "provider_id",
-    ]) {
-      if (mentionsOpenRouter(record[key])) return true;
-    }
-  }
-  return false;
-}
-
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const host = req.headers.host ?? "127.0.0.1";
   const url = `http://${host}${req.url ?? "/"}`;
@@ -124,18 +100,12 @@ async function getCatalog(catalogUrl: string): Promise<{
   };
 }
 
-function assertExactPublicIds(ids: string[]): void {
-  const sorted = [...ids].sort();
-  const expected = [...PUBLIC_IDS].sort();
-  if (sorted.length !== expected.length || sorted.some((id, index) => id !== expected[index])) {
-    throw new Error(
-      `public catalog must be exactly ${expected.join(", ")}; got ${ids.join(", ") || "(empty)"}`
-    );
-  }
-}
-
 async function main(): Promise<void> {
   process.env.API_KEY_SECRET ||= "rox-catalog-staging-smoke-secret";
+  // Staging shells often export INITIAL_PASSWORD. The harness DB is throwaway;
+  // keep the env so the smoke still proves /v1/models works when auth would
+  // otherwise be required.
+  process.env.INITIAL_PASSWORD ||= "rox-catalog-smoke-unused-bootstrap";
   const ownedDir = dataDir();
 
   seedOpenRouterCatalogCache();
@@ -148,6 +118,7 @@ async function main(): Promise<void> {
     testStatus: "active",
     providerSpecificData: {},
   });
+  await updateSettings({ requireAuthForModels: false });
 
   const server = http.createServer((req, res) => {
     void handle(req, res).catch((error) => {
@@ -189,10 +160,8 @@ async function main(): Promise<void> {
   if (normalPass.status !== 200) {
     throw new Error(`normal GET /v1/models returned ${normalPass.status}`);
   }
+  assertNormalCatalogHonesty(normalPass.models);
   const openRouterHits = normalPass.models.filter(mentionsOpenRouter);
-  if (openRouterHits.length > 0) {
-    throw new Error(`OpenRouter leaked ${openRouterHits.length} catalog entries in normal mode`);
-  }
 
   const report = {
     sha: process.env.STAGING_GIT_SHA ?? "local",
