@@ -10,8 +10,13 @@
  *
  * This test: seeds an OpenRouter connection, hides two OpenRouter specialty
  * models (audio: google/chirp-3, image: black-forest-labs/flux.2-pro), then
- * verifies the hidden models are excluded from the /v1/models catalog while
- * non-hidden models still appear.
+ * verifies the hidden models are excluded from the /v1/models catalog.
+ *
+ * ROX divergence: this fork publishes no OpenRouter model at all, so the catalog
+ * can no longer distinguish "hidden" from "visible" for this provider — the
+ * non-hidden control (deepgram/nova-3) is withheld too. The hidden-flag storage
+ * and path matching that #9293 fixed are asserted directly against
+ * getModelIsHidden below; the catalog half now pins the ROX exclusion instead.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -114,8 +119,45 @@ test("#9293 hidden OpenRouter specialty models are excluded from /v1/models cata
     "#9293 RED: hidden image model openrouter/black-forest-labs/flux.2-pro should NOT appear in catalog"
   );
 
-  // Verify non-hidden audio models from OpenRouter still appear
-  // deepgram/nova-3 is not hidden, so it should be present
+  // ROX: the non-hidden control is withheld as well — no OpenRouter specialty
+  // model is published, hidden flag or not.
   const visibleAudio = audioModels.find((m) => String(m.id).endsWith("deepgram/nova-3"));
-  assert.ok(visibleAudio, "non-hidden audio model deepgram/nova-3 should still appear in catalog");
+  assert.equal(visibleAudio, undefined, "ROX excludes OpenRouter audio models from the catalog");
+  assert.deepEqual(
+    body.data.filter((m) => String(m.id).startsWith("openrouter/")).map((m) => m.id),
+    []
+  );
+});
+
+test("#9293 nested specialty ids honor hidden flags on a non-OpenRouter provider", async () => {
+  const connection = await providersDb.createProviderConnection({
+    provider: "together",
+    authType: "apikey",
+    name: "together-9293",
+    apiKey: "sk-together-9293",
+    isActive: true,
+    testStatus: "active",
+    providerSpecificData: {},
+  });
+  assert.ok(connection?.id, "Together connection created");
+
+  mergeModelCompatOverride("together", "openai/whisper-large-v3", { isHidden: true });
+  assert.equal(getModelIsHidden("together", "openai/whisper-large-v3"), true);
+
+  const response = await v1ModelsCatalog.getUnifiedModelsResponse(
+    new Request("http://localhost/v1/models")
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { data: Array<{ id: string; type?: string }> };
+  const audioModels = body.data.filter((m) => m.type === "audio");
+
+  assert.equal(
+    audioModels.find((m) => String(m.id) === "together/openai/whisper-large-v3"),
+    undefined,
+    "hidden nested together audio id must not appear — .split('/').pop() would miss this flag"
+  );
+  assert.ok(
+    audioModels.find((m) => String(m.id) === "together/openai/whisper-large-v3-turbo"),
+    "sibling nested together audio id must still appear so the hidden-flag path is not vacuous"
+  );
 });

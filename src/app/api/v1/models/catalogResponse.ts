@@ -35,6 +35,7 @@ import { isModelCatalogNamesEnabled } from "@/shared/utils/featureFlags";
 import { extractApiKey } from "@/sse/services/auth";
 import { maybeOmitCatalogModelName } from "./catalogHelpers";
 import { isCodexModelCatalogClient } from "./catalogRequest";
+import { isOpenRouterCatalogEntry } from "@/lib/roxPublicModelPolicy";
 
 /**
  * Post-filter chain applied AFTER the API-key filter, so variants and mirrors are
@@ -191,6 +192,13 @@ export async function finalizeCatalogResponse(
   getContextFallback: (model: Record<string, unknown>) => number | undefined,
   headers: Record<string, string>
 ): Promise<Response> {
+  // Fail-closed OpenRouter exclusion. Every catalog response is serialized here,
+  // while the branches that assemble `finalModels` upstream each rebuild it from
+  // collections that predate the policy filter (per-key permissions, quota combos).
+  // Enforcing the exclusion at the single exit means a branch added later cannot
+  // republish OpenRouter by omission.
+  finalModels = finalModels.filter((model) => !isOpenRouterCatalogEntry(model));
+
   const apiKey = extractApiKey(request);
   if (apiKey) {
     const { getApiKeyMetadata, isModelAllowedForKey } = await import("@/lib/db/apiKeys");

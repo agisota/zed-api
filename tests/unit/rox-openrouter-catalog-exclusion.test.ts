@@ -15,6 +15,10 @@ process.env.API_KEY_SECRET = process.env.API_KEY_SECRET || "rox-openrouter-exclu
 const core = await import("../../src/lib/db/core.ts");
 const apiKeysDb = await import("../../src/lib/db/apiKeys.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
+const poolsDb = await import("../../src/lib/db/quotaPools.ts");
+const groupsDb = await import("../../src/lib/db/quotaGroups.ts");
+const { syncQuotaCombos } = await import("../../src/lib/quota/quotaCombos.ts");
+const { isRoxPublicModelId } = await import("../../src/lib/roxPublicModelPolicy.ts");
 const v1ModelsCatalog = await import("../../src/app/api/v1/models/catalog.ts");
 
 // The catalog qualifies every OpenRouter model as `openrouter/<vendor>/<model>` and
@@ -246,4 +250,99 @@ test("functional-gateway mirrors cannot reintroduce OpenRouter after post-filter
   } finally {
     removeFeatureFlagOverride("EXPOSE_FUNCTIONAL_GATEWAY_MIRRORS");
   }
+});
+
+test("a quota-exclusive key keeps callable qtSd ids when the ROX public catalog is on", async () => {
+  const group = groupsDb.createGroup("Rox Exclusion");
+  const connection = await providersDb.createProviderConnection({
+    provider: "glm",
+    authType: "apikey",
+    name: "rox-exclusion-glm",
+    apiKey: "sk-glm-rox-exclusion",
+    isActive: true,
+    testStatus: "active",
+  });
+  const pool = poolsDb.createPool({
+    connectionId: (connection as Record<string, unknown>).id as string,
+    name: "Rox Exclusion",
+    groupId: group.id,
+  });
+  await syncQuotaCombos(pool.id);
+
+  const quotaKey = await apiKeysDb.createApiKey("rox-openrouter-quota", "rox-quota-machine");
+  await apiKeysDb.updateApiKeyPermissions(quotaKey.id, { allowedQuotas: [pool.id] });
+
+  process.env.ROX_PUBLIC_CATALOG_ONLY = "true";
+  const publicBody = await fetchCatalog();
+  assert.ok(publicBody.data.length > 0, "public catalog must not be empty");
+  assert.ok(
+    publicBody.data.every((model) => isRoxPublicModelId(model.id)),
+    "the env flag must actually switch the unauthenticated catalog to rox/*"
+  );
+
+  const body = await fetchCatalog(quotaKey.key);
+  const ids = body.data.map((model) => model.id);
+
+  assert.deepEqual(
+    openRouterEntries(body).map((model) => model.id),
+    []
+  );
+  assert.equal(
+    ids.filter((id) => isRoxPublicModelId(id)).length,
+    0,
+    "quota keys must not be advertised rox/* ids they cannot POST"
+  );
+  assert.ok(
+    ids.some((id) => id.startsWith("qtSd/")),
+    "quota keys must still see pool qtSd/* ids"
+  );
+
+  const listedId = ids.find((id) => id.startsWith("qtSd/"));
+  assert.ok(listedId, "need a listed quota id to check request policy");
+  const { enforceApiKeyPolicy } = await import("../../src/shared/utils/apiKeyPolicy.ts");
+  const policy = await enforceApiKeyPolicy(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${quotaKey.key}` },
+    }),
+    listedId
+  );
+  assert.equal(
+    policy.rejection,
+    null,
+    "a listed quota catalog id must pass enforceApiKeyPolicy for the same key"
+  );
+});
+
+test("a glm quota pool in a group named Open Router still appears in the catalog", async () => {
+  const group = groupsDb.createGroup("Open Router");
+  const connection = await providersDb.createProviderConnection({
+    provider: "glm",
+    authType: "apikey",
+    name: "rox-openrouter-named-glm",
+    apiKey: "sk-glm-rox-or-named",
+    isActive: true,
+    testStatus: "active",
+  });
+  const pool = poolsDb.createPool({
+    connectionId: (connection as Record<string, unknown>).id as string,
+    name: "Rox Named Group",
+    groupId: group.id,
+  });
+  await syncQuotaCombos(pool.id);
+
+  const quotaKey = await apiKeysDb.createApiKey("rox-or-named-quota", "rox-quota-machine");
+  await apiKeysDb.updateApiKeyPermissions(quotaKey.id, { allowedQuotas: [pool.id] });
+
+  const body = await fetchCatalog(quotaKey.key);
+  const ids = body.data.map((model) => model.id);
+  assert.ok(
+    ids.some((id) => id.startsWith("qtSd/openrouter/glm/")),
+    "group slug openrouter must not strip glm quota ids"
+  );
+  assert.equal(
+    body.data.filter((model) => String(model.owned_by).toLowerCase() === "openrouter").length,
+    0
+  );
+  assert.ok(ids.every((id) => !id.startsWith("openrouter/")));
 });
